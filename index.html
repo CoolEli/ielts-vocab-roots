@@ -241,14 +241,14 @@
 <div class="sync-overlay" id="syncOverlay" hidden>
   <div class="sync-card">
     <h3>登录同步学习记录</h3>
-    <p class="sync-desc">用邮箱收验证码登录。删除记录和学习位置会自动同步到云端，换设备登录后接着学。</p>
+    <p class="sync-desc">用邮箱登录（免密码）。删除记录和学习位置会自动同步到云端，换设备登录后接着学。</p>
     <div id="syncStepEmail">
       <input id="syncEmail" type="email" placeholder="输入邮箱地址" autocomplete="email" />
-      <button class="btn btn-accent" id="syncSend" type="button">发送验证码</button>
+      <button class="btn btn-accent" id="syncSend" type="button">发送登录链接</button>
     </div>
     <div id="syncStepCode" hidden>
-      <input id="syncCode" type="text" inputmode="numeric" placeholder="输入6位验证码" maxlength="6" autocomplete="one-time-code" />
-      <button class="btn btn-accent" id="syncVerify" type="button">验证登录</button>
+      <p style="font-size:14px;line-height:1.7;">登录链接已发送到 <b id="syncSentTo"></b>，请去邮箱点击邮件中的 <b>Sign in</b>（请在同一台设备上点击），点击后会自动回到本页面完成登录。</p>
+      <button class="btn" id="syncResend" type="button">重新发送</button>
     </div>
     <div id="syncLogged" hidden>
       <p style="font-size:14px;">已登录：<b id="syncEmailShow"></b></p>
@@ -76453,7 +76453,7 @@ if (savedPos) savePos(savedPos);
 /* ================= cloud sync (Supabase email OTP) ================= */
 var SB_URL = 'https://qbmxgscvqonxwfoneycv.supabase.co';
 var SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFibXhnc2N2cW9ueHdmb25leWN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzOTE5OTYsImV4cCI6MjEwNzk2Nzk5Nn0.eP1oPdk6D6t0nEvbx-q0oCTASpXXk9NogsZpQKP9I4Y';
-var sb = null, cloudUser = null, pushTimer = null, lastPosId = null, pendingEmail = null;
+var sb = null, cloudUser = null, pushTimer = null, lastPosId = null;
 var sbLibLoading = false, sbLibWaiters = [];
 
 function queuePush(){
@@ -76512,7 +76512,7 @@ function openSync(){
     document.getElementById('syncEmailShow').textContent = cloudUser.email;
     showSyncStep('logged');
   } else {
-    showSyncStep(pendingEmail ? 'code' : 'email');
+    showSyncStep('email');
   }
 }
 function closeSync(){ document.getElementById('syncOverlay').hidden = true; }
@@ -76562,37 +76562,25 @@ function bindSyncUI(){
   document.getElementById('syncSend').addEventListener('click', function(){
     var email = document.getElementById('syncEmail').value.trim();
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ setSyncNote('请输入正确的邮箱地址'); return; }
-    setSyncNote('验证码发送中…');
+    setSyncNote('发送中…');
     document.getElementById('syncSend').disabled = true;
     ensureSb(function(client){
       document.getElementById('syncSend').disabled = false;
       if(!client) return;
       client.auth.signInWithOtp({ email: email }).then(function(r){
         if(r.error){ setSyncNote('发送失败：' + r.error.message); return; }
-        pendingEmail = email;
-        setSyncNote('验证码已发送，请查收邮件（没收到看看垃圾箱）');
+        document.getElementById('syncSentTo').textContent = email;
+        setSyncNote('已发送，请查收邮件（没收到看看垃圾箱）');
         showSyncStep('code');
       });
     });
   });
-  document.getElementById('syncVerify').addEventListener('click', function(){
-    var code = document.getElementById('syncCode').value.trim();
-    if(code.length < 6){ setSyncNote('请输入6位验证码'); return; }
-    setSyncNote('验证中…');
-    document.getElementById('syncVerify').disabled = true;
-    ensureSb(function(client){
-      if(!client){ document.getElementById('syncVerify').disabled = false; return; }
-      client.auth.verifyOtp({ email: pendingEmail, token: code, type: 'email' }).then(function(r){
-        document.getElementById('syncVerify').disabled = false;
-        if(r.error){ setSyncNote('验证失败：' + r.error.message); return; }
-        if(r.data && r.data.user) onLogin(r.data.user);
-        else setSyncNote('验证失败，请重试');
-      });
-    });
+  document.getElementById('syncResend').addEventListener('click', function(){
+    showSyncStep('email'); setSyncNote('');
   });
   document.getElementById('syncLogout').addEventListener('click', function(){
     if(sb){ try{ sb.auth.signOut(); }catch(e){} }
-    cloudUser = null; pendingEmail = null;
+    cloudUser = null;
     refreshSyncBtn(); showSyncStep('email'); setSyncNote('已退出登录');
   });
 }
@@ -76601,6 +76589,14 @@ refreshSyncBtn();
 loadSbLib(function(ok){
   if(!ok || !window.supabase) return;
   if(!sb) sb = window.supabase.createClient(SB_URL, SB_KEY);
+  sb.auth.onAuthStateChange(function(event, session){
+    if(event === 'SIGNED_IN' && session && session.user){
+      try{ window.history.replaceState(null, document.title, window.location.pathname); }catch(e){}
+      if(!cloudUser || cloudUser.id !== session.user.id) onLogin(session.user);
+    } else if(event === 'SIGNED_OUT'){
+      cloudUser = null; refreshSyncBtn();
+    }
+  });
   sb.auth.getSession().then(function(r){
     var sess = r.data && r.data.session;
     if(sess && sess.user) onLogin(sess.user);
