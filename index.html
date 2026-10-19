@@ -179,6 +179,35 @@
   }
   #sentinel{height:8px;}
   .foot-note{color:var(--muted); font-size:12px; text-align:center; margin-top:26px;}
+
+  /* ---- cloud sync (login) ---- */
+  .sync-btn{
+    border:1px solid var(--line); background:var(--surface); color:var(--ink);
+    border-radius:8px; padding:5px 12px; font-size:13px; white-space:nowrap;
+  }
+  .sync-btn.on{border-color:var(--accent); color:var(--accent); font-weight:600;}
+  .sync-overlay{
+    position:fixed; inset:0; z-index:200; background:rgba(20,18,15,.45);
+    display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  .sync-overlay[hidden]{display:none;}
+  .sync-card{
+    background:var(--surface); color:var(--ink); border:1px solid var(--line);
+    border-radius:14px; padding:22px; width:min(380px,100%); box-shadow:var(--shadow);
+    position:relative;
+  }
+  .sync-card h3{margin:0 0 6px; font-size:17px;}
+  .sync-desc{margin:0 0 14px; font-size:13px; color:var(--muted); line-height:1.6;}
+  .sync-card input{
+    width:100%; border:1px solid var(--line); border-radius:8px; padding:9px 12px;
+    font-size:14px; margin-bottom:10px; background:var(--surface); color:var(--ink);
+  }
+  .sync-card .btn{width:100%; padding:9px;}
+  .sync-status{min-height:20px; font-size:12.5px; color:var(--muted); margin:10px 0 0; text-align:center;}
+  .sync-close{
+    position:absolute; top:10px; right:12px; border:0; background:none;
+    color:var(--muted); font-size:13px; padding:4px 8px;
+  }
 </style>
 <noscript><style>.detail{display:block!important}</style></noscript></head>
 <body>
@@ -200,6 +229,7 @@
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.8-3.8"/></svg>
         <input id="q" type="search" placeholder="搜索单词或中文释义…" autocomplete="off" />
       </label>
+      <button id="syncBtn" class="sync-btn" type="button">登录同步</button>
     </div>
     <div class="freq-row" id="freqRow" role="group" aria-label="按词频筛选"><button type="button" class="chip" data-band="all">全部频段</button><button type="button" class="chip" data-band="b100">100次以上</button><button type="button" class="chip" data-band="b40">40~99次</button><button type="button" class="chip" data-band="b20">20~39次</button><button type="button" class="chip" data-band="b10">10~19次</button><button type="button" class="chip" data-band="b6">6~9次</button><button type="button" class="chip" data-band="b3">3~5次</button><button type="button" class="chip" data-band="low">低频/未收录</button></div>
     <nav class="theme-nav" aria-label="主题导航">
@@ -208,6 +238,27 @@
     </nav>
   </div>
 </header>
+<div class="sync-overlay" id="syncOverlay" hidden>
+  <div class="sync-card">
+    <h3>登录同步学习记录</h3>
+    <p class="sync-desc">用邮箱收验证码登录。删除记录和学习位置会自动同步到云端，换设备登录后接着学。</p>
+    <div id="syncStepEmail">
+      <input id="syncEmail" type="email" placeholder="输入邮箱地址" autocomplete="email" />
+      <button class="btn btn-accent" id="syncSend" type="button">发送验证码</button>
+    </div>
+    <div id="syncStepCode" hidden>
+      <input id="syncCode" type="text" inputmode="numeric" placeholder="输入6位验证码" maxlength="6" autocomplete="one-time-code" />
+      <button class="btn btn-accent" id="syncVerify" type="button">验证登录</button>
+    </div>
+    <div id="syncLogged" hidden>
+      <p style="font-size:14px;">已登录：<b id="syncEmailShow"></b></p>
+      <button class="btn" id="syncLogout" type="button">退出登录</button>
+    </div>
+    <p class="sync-status" id="syncStatus"></p>
+    <button class="sync-close" id="syncClose" type="button">关闭</button>
+  </div>
+</div>
+
 
 <main>
   <div class="restore-bar" id="restoreBar">
@@ -76046,13 +76097,14 @@ function lsSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
 
 var deleted = new Set();
 try{ (JSON.parse(lsGet(DEL_KEY)||'[]')).forEach(function(id){ if(wordById.has(id)) deleted.add(id); }); }catch(e){}
-function saveDeleted(){ lsSet(DEL_KEY, JSON.stringify(Array.from(deleted))); }
+function saveDeleted(){ lsSet(DEL_KEY, JSON.stringify(Array.from(deleted))); queuePush(); }
 
 var posSaveTimer = null;
 function savePos(id){
   if(!id) return;
+  lastPosId = id;
   clearTimeout(posSaveTimer);
-  posSaveTimer = setTimeout(function(){ lsSet(POS_KEY, JSON.stringify({id:id})); }, 250);
+  posSaveTimer = setTimeout(function(){ lsSet(POS_KEY, JSON.stringify({id:id})); queuePush(); }, 250);
 }
 function loadPos(){ try{ var p = JSON.parse(lsGet(POS_KEY)||'null'); return p && p.id ? p.id : null; }catch(e){ return null; } }
 
@@ -76397,6 +76449,164 @@ listEl.addEventListener('click', function(e){
 var savedPos = loadPos();
 rerender(savedPos && wordById.has(savedPos) ? savedPos : null);
 if (savedPos) savePos(savedPos);
+
+/* ================= cloud sync (Supabase email OTP) ================= */
+var SB_URL = 'https://qbmxgscvqonxwfoneycv.supabase.co';
+var SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFibXhnc2N2cW9ueHdmb25leWN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzOTE5OTYsImV4cCI6MjEwNzk2Nzk5Nn0.eP1oPdk6D6t0nEvbx-q0oCTASpXXk9NogsZpQKP9I4Y';
+var sb = null, cloudUser = null, pushTimer = null, lastPosId = null, pendingEmail = null;
+var sbLibLoading = false, sbLibWaiters = [];
+
+function queuePush(){
+  if(!(sb && cloudUser)) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushNow, 1500);
+}
+function pushNow(){
+  if(!(sb && cloudUser)) return;
+  sb.from('study_records').upsert({
+    user_id: cloudUser.id,
+    deleted_ids: Array.from(deleted),
+    progress: { pos: lastPosId },
+    updated_at: new Date().toISOString()
+  }, { onConflict: 'user_id' }).then(function(r){
+    if(r.error) setSyncNote('同步失败，稍后重试');
+    else setSyncNote('已同步 ' + new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'}));
+  });
+}
+function pullCloud(){
+  if(!(sb && cloudUser)) return;
+  sb.from('study_records').select('deleted_ids,progress').eq('user_id', cloudUser.id).maybeSingle().then(function(r){
+    if(r.error){ setSyncNote('读取云端失败'); return; }
+    var changed = false;
+    if(r.data){
+      (r.data.deleted_ids || []).forEach(function(id){ if(wordById.has(id) && !deleted.has(id)){ deleted.add(id); changed = true; } });
+      var cp = r.data.progress && r.data.progress.pos;
+      if(cp && wordById.has(cp) && !loadPos()){ lastPosId = cp; changed = true; }
+    }
+    if(changed){ saveDeleted(); rerender(lastPosId || currentId); }
+    setSyncNote('已同步');
+  });
+}
+function setSyncNote(t){ var n = document.getElementById('syncStatus'); if(n) n.textContent = t || ''; }
+function refreshSyncBtn(){
+  var b = document.getElementById('syncBtn'); if(!b) return;
+  if(cloudUser && cloudUser.email){
+    var short = cloudUser.email.split('@')[0];
+    if(short.length > 10) short = short.slice(0, 10) + '…';
+    b.innerHTML = '☁ ' + esc(short);
+    b.classList.add('on');
+  } else {
+    b.textContent = '登录同步';
+    b.classList.remove('on');
+  }
+}
+function showSyncStep(which){
+  document.getElementById('syncStepEmail').hidden = (which !== 'email');
+  document.getElementById('syncStepCode').hidden = (which !== 'code');
+  document.getElementById('syncLogged').hidden = (which !== 'logged');
+}
+function openSync(){
+  var o = document.getElementById('syncOverlay'); if(!o) return;
+  o.hidden = false;
+  if(cloudUser){
+    document.getElementById('syncEmailShow').textContent = cloudUser.email;
+    showSyncStep('logged');
+  } else {
+    showSyncStep(pendingEmail ? 'code' : 'email');
+  }
+}
+function closeSync(){ document.getElementById('syncOverlay').hidden = true; }
+function loadSbLib(cb){
+  if(window.supabase){ cb(true); return; }
+  sbLibWaiters.push(cb);
+  if(sbLibLoading) return;
+  sbLibLoading = true;
+  var s = document.createElement('script');
+  s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+  function done(ok){
+    sbLibLoading = false;
+    var ws = sbLibWaiters; sbLibWaiters = [];
+    var good = ok && !!window.supabase;
+    ws.forEach(function(f){ try{ f(good); }catch(e){} });
+  }
+  s.onload = function(){ done(true); };
+  s.onerror = function(){ done(false); };
+  document.head.appendChild(s);
+  setTimeout(function(){ if(sbLibLoading) done(!!window.supabase); }, 12000);
+}
+function ensureSb(cb){
+  loadSbLib(function(ok){
+    if(!ok){ setSyncNote('同步组件加载失败，请检查网络后重试'); cb(null); return; }
+    if(!sb) sb = window.supabase.createClient(SB_URL, SB_KEY);
+    cb(sb);
+  });
+}
+function onLogin(user){
+  cloudUser = user;
+  refreshSyncBtn();
+  var o = document.getElementById('syncOverlay');
+  if(o && !o.hidden){
+    document.getElementById('syncEmailShow').textContent = user.email;
+    showSyncStep('logged');
+  }
+  setSyncNote('登录成功，正在同步…');
+  pullCloud();
+  queuePush();
+}
+function bindSyncUI(){
+  document.getElementById('syncBtn').addEventListener('click', openSync);
+  document.getElementById('syncClose').addEventListener('click', closeSync);
+  document.getElementById('syncOverlay').addEventListener('click', function(e){
+    if(e.target === document.getElementById('syncOverlay')) closeSync();
+  });
+  document.getElementById('syncSend').addEventListener('click', function(){
+    var email = document.getElementById('syncEmail').value.trim();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ setSyncNote('请输入正确的邮箱地址'); return; }
+    setSyncNote('验证码发送中…');
+    document.getElementById('syncSend').disabled = true;
+    ensureSb(function(client){
+      document.getElementById('syncSend').disabled = false;
+      if(!client) return;
+      client.auth.signInWithOtp({ email: email }).then(function(r){
+        if(r.error){ setSyncNote('发送失败：' + r.error.message); return; }
+        pendingEmail = email;
+        setSyncNote('验证码已发送，请查收邮件（没收到看看垃圾箱）');
+        showSyncStep('code');
+      });
+    });
+  });
+  document.getElementById('syncVerify').addEventListener('click', function(){
+    var code = document.getElementById('syncCode').value.trim();
+    if(code.length < 6){ setSyncNote('请输入6位验证码'); return; }
+    setSyncNote('验证中…');
+    document.getElementById('syncVerify').disabled = true;
+    ensureSb(function(client){
+      if(!client){ document.getElementById('syncVerify').disabled = false; return; }
+      client.auth.verifyOtp({ email: pendingEmail, token: code, type: 'email' }).then(function(r){
+        document.getElementById('syncVerify').disabled = false;
+        if(r.error){ setSyncNote('验证失败：' + r.error.message); return; }
+        if(r.data && r.data.user) onLogin(r.data.user);
+        else setSyncNote('验证失败，请重试');
+      });
+    });
+  });
+  document.getElementById('syncLogout').addEventListener('click', function(){
+    if(sb){ try{ sb.auth.signOut(); }catch(e){} }
+    cloudUser = null; pendingEmail = null;
+    refreshSyncBtn(); showSyncStep('email'); setSyncNote('已退出登录');
+  });
+}
+bindSyncUI();
+refreshSyncBtn();
+loadSbLib(function(ok){
+  if(!ok || !window.supabase) return;
+  if(!sb) sb = window.supabase.createClient(SB_URL, SB_KEY);
+  sb.auth.getSession().then(function(r){
+    var sess = r.data && r.data.session;
+    if(sess && sess.user) onLogin(sess.user);
+  });
+});
+
 })();
 </script>
 </body>
