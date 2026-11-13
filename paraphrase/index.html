@@ -167,6 +167,7 @@ main{max-width:1400px;margin:0 auto;padding:18px 16px 60px;}
     <button class="tab" data-tab="quiz">自测</button>
   </div>
   <div class="spacer"></div>
+  <button class="tbtn" id="recBtn">⇅ 记录码</button>
   <button class="tbtn" id="zhBtn">隐藏中文</button>
   <a class="back" href="../">← 词根词库</a>
   <a class="back" href="../listening/">听力拼写 →</a>
@@ -281,6 +282,51 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelect
 let hz=LS.get('hz',false);function applyZh(){document.body.classList.toggle('hidezh',hz);$('#zhBtn').textContent=hz?'显示中文':'隐藏中文';}
 $('#zhBtn').onclick=()=>{hz=!hz;LS.set('hz',hz);applyZh();};document.addEventListener('keydown',e=>{if(e.key==='h'&&e.target.tagName!=='INPUT'){hz=!hz;LS.set('hz',hz);applyZh();}});
 applyZh();renderH();renderG();
+// ---- record code (cross-device) ----
+function RecSync(opt){ // opt: {prefix, title, desc, get():obj, set(obj,mode), summary(obj):str}
+  const b64e=u8=>{let s='';for(let i=0;i<u8.length;i+=0x8000)s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));return btoa(s);};
+  const b64d=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+  async function pipe(u8,Ctor,fmt){const st=new Blob([u8]).stream().pipeThrough(new Ctor(fmt));return new Uint8Array(await new Response(st).arrayBuffer());}
+  async function encode(o){const u8=new TextEncoder().encode(JSON.stringify(o));
+    if(window.CompressionStream){try{return opt.prefix+'z'+b64e(await pipe(u8,CompressionStream,'deflate-raw'));}catch(e){}}
+    return opt.prefix+'j'+b64e(u8);}
+  async function decode(code){code=code.replace(/\s+/g,'');if(!code.startsWith(opt.prefix))throw new Error('这不是本页的记录码（应以 '+opt.prefix+' 开头）');
+    const k=code[opt.prefix.length],body=b64d(code.slice(opt.prefix.length+1));let u8;
+    if(k==='z'){if(!window.DecompressionStream)throw new Error('这个浏览器太旧，无法解压记录码，请换 Chrome / Safari 新版');u8=await pipe(body,DecompressionStream,'deflate-raw');}
+    else if(k==='j')u8=body;else throw new Error('记录码格式不对');
+    return JSON.parse(new TextDecoder().decode(u8));}
+  const css=`.rs-bg{position:fixed;inset:0;background:rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center;z-index:99;padding:16px}
+.rs-m{background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:14px;max-width:560px;width:100%;padding:18px 18px 14px;box-shadow:0 10px 40px rgba(0,0,0,.25);max-height:92vh;overflow:auto}
+.rs-m h3{margin:0 0 4px;font-size:17px}.rs-m p{margin:4px 0 10px;font-size:13.5px;color:var(--muted);line-height:1.55}
+.rs-m textarea{width:100%;box-sizing:border-box;height:84px;font:12px/1.4 ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:9px;padding:8px;background:var(--surface2);color:var(--ink);resize:vertical;word-break:break-all}
+.rs-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 14px}.rs-row button{border:1px solid var(--line);background:var(--surface2);color:var(--ink);border-radius:9px;padding:6px 13px;font-size:13.5px;cursor:pointer}
+.rs-row button.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}.rs-msg{font-size:13px;color:var(--ok)}.rs-msg.err{color:var(--warn)}`;
+  const s=document.createElement('style');s.textContent=css;document.head.appendChild(s);
+  async function open(){
+    const bg=document.createElement('div');bg.className='rs-bg';
+    bg.innerHTML=`<div class="rs-m"><h3>${opt.title}</h3><p>${opt.desc}</p>
+<div style="font-size:13px;font-weight:600">本机记录码 <span style="font-weight:400;color:var(--muted)" class="rs-sum"></span></div>
+<textarea class="rs-out" readonly>生成中…</textarea><div class="rs-row"><button class="pri rs-copy">复制记录码</button><span class="rs-msg rs-m1"></span></div>
+<div style="font-size:13px;font-weight:600">粘贴其他设备的记录码</div>
+<textarea class="rs-in" placeholder="${opt.prefix}…"></textarea><div class="rs-row"><button class="pri rs-merge">合并导入</button><button class="rs-over">覆盖本机</button><span style="flex:1"></span><button class="rs-close">关闭</button></div><div class="rs-msg rs-m2"></div></div>`;
+    document.body.appendChild(bg);const q=c=>bg.querySelector(c);
+    const close=()=>bg.remove();q('.rs-close').onclick=close;bg.onclick=e=>{if(e.target===bg)close();};
+    const refresh=async()=>{const o=opt.get();q('.rs-sum').textContent='（'+opt.summary(o)+'）';q('.rs-out').value=await encode(o);};await refresh();
+    q('.rs-copy').onclick=async()=>{const t=q('.rs-out');try{await navigator.clipboard.writeText(t.value);}catch(e){t.select();document.execCommand('copy');}q('.rs-m1').textContent='已复制，可发到微信 / 备忘录';};
+    const imp=async mode=>{const m=q('.rs-m2');m.className='rs-msg rs-m2';try{const o=await decode(q('.rs-in').value);if(mode==='over'&&!confirm('用这段记录覆盖本机记录？本机现有记录会被替换。'))return;opt.set(o,mode);await refresh();m.textContent='导入成功：'+opt.summary(opt.get());}catch(e){m.className='rs-msg rs-m2 err';m.textContent='导入失败：'+(e.message||e);}};
+    q('.rs-merge').onclick=()=>imp('merge');q('.rs-over').onclick=()=>imp('over');
+  }
+  return {open,encode,decode};
+}
+
+const gkey=g=>g.h+'\u21c4'+g.v[0];
+const REC=RecSync({prefix:'PARA1-',title:'同义替换 记录码',
+  desc:'包含：所有标记为「已掌握」的替换对。复制后发给自己（微信 / 备忘录），在另一台设备打开本页 → ⇅ 记录码 → 粘贴导入。',
+  get:()=>({k:G.filter(g=>done.has(g.id)).map(gkey)}),
+  summary:o=>`已掌握 ${(o.k||[]).length} 组替换`,
+  set:(o,mode)=>{const m=new Map(G.map(g=>[gkey(g),g.id]));if(mode==='over')done.clear();(o.k||[]).forEach(k=>{if(m.has(k))done.add(m.get(k));});saveDone();
+    try{renderG();}catch(e){} document.querySelectorAll('.tab.on').forEach(t=>t.click());}});
+$('#recBtn').onclick=()=>REC.open();
 </script>
 </body>
 </html>
